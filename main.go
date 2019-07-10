@@ -141,10 +141,10 @@ type Repo struct {
 // T Note: struct fields must be public in order for unmarshal to
 // correctly populate the data.
 type T struct {
-	AppID     string `yaml:"appID"`
-	AppName   string `yaml:"appName"`
-	Checkmarx struct {
-		Team     string `yaml:"cx-team"`
+	AppID   string `yaml:"appID"`
+	AppName string `yaml:"appName"`
+	Check   struct {
+		Team     string `yaml:"team"`
 		Instance string
 		Enable   bool
 	}
@@ -152,37 +152,18 @@ type T struct {
 
 var token = os.Getenv("GITHUB_TOKEN")
 var yesterday = time.Now().AddDate(0, 0, -1)
-var rawMap = map[string]string{
+var rawContentURL = map[string]string{
 	"github.com": "https://raw.githubusercontent.com",
 }
 
 func main() {
-	var repos []*Repo
-	client := graphql.NewClient("https://api.github.com/graphql")
-	// client.Log = func(s string) { log.Println(s) }
-	ctx := context.Background()
-	req := graphql.NewRequest(search)
-	req.Header.Add("Authorization", "Bearer "+token)
-	var respData Response
-	if err := client.Run(ctx, req, &respData); err != nil {
+	repos, err := activities("go")
+	if err != nil {
 		log.Fatal(err)
 	}
-	repos = ActiveTopic(respData.Viewer.Repositories.Nodes, "go")
-	for respData.Viewer.Repositories.PageInfo.HasNextPage {
-		req := graphql.NewRequest(nextSearch)
-		req.Header.Add("Authorization", "Bearer "+token)
-		req.Var("after", respData.Viewer.Repositories.PageInfo.EndCursor)
-		if err := client.Run(ctx, req, &respData); err != nil {
-			log.Fatal(err)
-		}
-		tRepos := ActiveTopic(respData.Viewer.Repositories.Nodes, "go")
-		repos = append(repos, tRepos...)
-	}
-
-	for _, commit := range repos {
-		fmt.Printf("%#v\n", commit)
-		ymlURL := fmt.Sprintf("%s/%s/%s", rawURL(commit.URL), commit.Branch, "props.yml")
-		data, err := fetchWithToken(ymlURL)
+	for _, repo := range repos {
+		fmt.Printf("%#v\n", repo)
+		data, err := repo.raw("props.yml")
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -205,8 +186,32 @@ func pp(respData *Response) {
 	fmt.Printf("%s\n", data)
 }
 
+func activities(topic string) (repos []*Repo, err error) {
+	client := graphql.NewClient("https://api.github.com/graphql")
+	// client.Log = func(s string) { log.Println(s) }
+	ctx := context.Background()
+	req := graphql.NewRequest(search)
+	req.Header.Add("Authorization", "Bearer "+token)
+	var respData Response
+	if err = client.Run(ctx, req, &respData); err != nil {
+		return nil, err
+	}
+	repos = activeTopic(respData.Viewer.Repositories.Nodes, topic)
+	for respData.Viewer.Repositories.PageInfo.HasNextPage {
+		req := graphql.NewRequest(nextSearch)
+		req.Header.Add("Authorization", "Bearer "+token)
+		req.Var("after", respData.Viewer.Repositories.PageInfo.EndCursor)
+		if err := client.Run(ctx, req, &respData); err != nil {
+			return nil, err
+		}
+		tRepos := activeTopic(respData.Viewer.Repositories.Nodes, topic)
+		repos = append(repos, tRepos...)
+	}
+	return
+}
+
 // ActiveTopic collect active repositories with specified topic
-func ActiveTopic(repositories []*Repository, topic string) (active []*Repo) {
+func activeTopic(repositories []*Repository, topic string) (active []*Repo) {
 	for _, repo := range repositories {
 		for _, node := range repo.RepositoryTopics.Nodes {
 			if node.Topic.Name == topic {
@@ -229,12 +234,13 @@ func ActiveTopic(repositories []*Repository, topic string) (active []*Repo) {
 }
 
 // https://raw.githubusercontent.com/[USER-NAME]/[REPOSITORY-NAME]/[BRANCH-NAME]/[FILE-PATH]
-func rawURL(url string) string {
-	s := strings.Split(url, "/")
-	return fmt.Sprintf("%s/%s/%s", rawMap[s[2]], s[3], s[4])
+func (r *Repo) rawURL() string {
+	s := strings.Split(r.URL, "/")
+	return fmt.Sprintf("%s/%s/%s", rawContentURL[s[2]], s[3], s[4])
 }
 
-func fetchWithToken(url string) (string, error) {
+func (r *Repo) raw(path string) (string, error) {
+	url := fmt.Sprintf("%s/%s/%s", r.rawURL(), r.Branch, path)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return "", err
@@ -249,13 +255,12 @@ func fetchWithToken(url string) (string, error) {
 		return "", err
 	}
 	defer res.Body.Close()
-	fmt.Printf("%v %[1]T", res.StatusCode)
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return "", fmt.Errorf("fetchWithToken status code: %v", res.StatusCode)
+		return "", fmt.Errorf("rawContent status code: %v", res.StatusCode)
 	}
 	bodyText, err := ioutil.ReadAll(res.Body)
 	if err != nil {
-		return "", fmt.Errorf("fetchWithToken %v", err)
+		return "", fmt.Errorf("rawContent %v", err)
 	}
 	s := string(bodyText)
 	return s, nil
