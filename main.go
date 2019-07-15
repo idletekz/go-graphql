@@ -10,6 +10,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -29,6 +31,9 @@ query {
     		url
     		id
     		sshUrl
+    		owner {
+    			login
+    		}    		
         repositoryTopics(first: 100) {
           nodes {
             topic {
@@ -67,6 +72,9 @@ query($after :String!) {
     		url
     		id
     		sshUrl
+    		owner {
+    			login
+    		}
         repositoryTopics(first: 100) {
         	totalCount
           nodes {
@@ -108,10 +116,13 @@ type Response struct {
 
 // Repository struct
 type Repository struct {
-	Name             string
-	URL              string
-	ID               string
-	SSHURL           string
+	Name   string
+	URL    string
+	ID     string
+	SSHURL string
+	Owner  struct {
+		Login string
+	}
 	RepositoryTopics struct {
 		Nodes []struct {
 			Topic struct {
@@ -136,6 +147,7 @@ type Repo struct {
 	URL    string
 	SSHURL string
 	Branch string
+	Owner  string
 }
 
 // T Note: struct fields must be public in order for unmarshal to
@@ -163,6 +175,7 @@ func main() {
 	}
 	for _, repo := range repos {
 		fmt.Printf("%#v\n", repo)
+		repo.clone()
 		data, err := repo.raw("props.yml")
 		if err != nil {
 			log.Fatal(err)
@@ -174,7 +187,7 @@ func main() {
 			log.Fatalf("error: %v", err)
 		}
 		fmt.Printf("--- t:\n%v\n\n", t)
-
+		repo.clone()
 	}
 }
 
@@ -222,6 +235,7 @@ func activeTopic(repositories []*Repository, topic string) (active []*Repo) {
 							Branch: branch.Name,
 							SSHURL: repo.SSHURL,
 							URL:    repo.URL,
+							Owner:  repo.Owner.Login,
 						}
 						active = append(active, r)
 					}
@@ -264,4 +278,43 @@ func (r *Repo) raw(path string) (string, error) {
 	}
 	s := string(bodyText)
 	return s, nil
+}
+
+func (r *Repo) clone() error {
+	s := strings.Split(r.URL, "//")
+	repo := fmt.Sprintf("%s//%s@%s", s[0], token, s[1])
+	args := []string{
+		"clone",
+		"--depth=1",
+		"-b",
+		r.Branch,
+		repo,
+	}
+	dir, err := r.createCloneDir()
+	if err != nil {
+		return fmt.Errorf("clone: %s", err)
+	}
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	err = cmd.Run()
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r *Repo) createCloneDir() (string, error) {
+	var dir string
+	pwd, err := os.Getwd()
+	if err != nil {
+		return dir, fmt.Errorf("createCloneDir getwd: %s", err)
+	}
+	dir = filepath.Join(pwd, r.Owner, r.Branch)
+	err = os.MkdirAll(dir, 0755)
+	if err != nil {
+		return dir, fmt.Errorf("createCloneDir mkdirall: %s", err)
+	}
+	return dir, nil
 }
