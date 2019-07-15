@@ -175,7 +175,10 @@ func main() {
 	}
 	for _, repo := range repos {
 		fmt.Printf("%#v\n", repo)
-		repo.clone()
+		err := repo.clone()
+		if err != nil {
+			log.Fatal(err)
+		}
 		data, err := repo.raw("props.yml")
 		if err != nil {
 			log.Fatal(err)
